@@ -1,3 +1,3 @@
 # Plea
 
-Plea is a __P__roof __L__anguage for __E__asy __A__dventure.
+Plea is a *P*roof *L*anguage for *E*asy *A*dventure.
