@@ -1,0 +1,14 @@
+type Not
+
+axiom eliminate A, Not(A) -> False
+
+type Or
+axiom or A                             -> Or(A, B)
+axiom reduce Or(A, False)              -> A
+axiom swap Or(A, B)                    -> Or(B, A)
+axiom left_map Or(A, B), Implies(A, C) -> Or(C, B)
+
+theorem right_map let p Or(A, B), let f Implies(B, C) -> Or(A, C)
+proof
+    let s swap(p)
+    return swap(left_map(s, f))
