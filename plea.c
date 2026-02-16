@@ -27,10 +27,6 @@ u64 hash_mem(u8 *buf, ssize len) {
     return h;
 }
 
-bool between(unsigned char l, unsigned char c, unsigned char r) {
-    return l <= c && c <= r;
-}
-
 /* ===== Readers ===== */
 
 #define Reader(lit) (Reader) { .buf = (u8 *) (lit), .len = arrlen(lit) - 1, }
@@ -346,7 +342,7 @@ ssize try_read_type(Arena *perm, Name **namespace, Reader *in, Type **out) {
                     expected(*in, "name for binding");
                 }
 
-                if (between('a', key.buf[0], 'Z')) {
+                if (!char_set(alpha_lower_set)[key.buf[0]]) {
                     error(*in, "Bindings must begin with a lowercase letter");
                 }
 
@@ -359,7 +355,7 @@ ssize try_read_type(Arena *perm, Name **namespace, Reader *in, Type **out) {
             Type *t = NULL;
 
             Name *name = lookup_name(NULL, namespace, ident, false);
-            if (between('a', ident.buf[0], 'z')) {
+            if (char_set(alpha_lower_set)[ident.buf[0]]) {
                 t = name->val;
             } else {
                 t = new(perm, *t, 1);
@@ -443,10 +439,16 @@ int main(int argc, char *argv[]) {
 
     if (argc != 2) {
         printf("status: %s <proof.plea>\n", argv[0]);
+        exit(1);
     }
 
     Name *namespace = NULL;
     Reader in = read_file_malloc(argv[1]);
+
+    if (!in.buf) {
+        fprintf(stderr, "Error: could not open file `%s`\n", argv[1]);
+        exit(1);
+    }
 
     while (in.i < in.len) {
         try_read_whitespace(&in);
