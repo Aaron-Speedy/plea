@@ -1,5 +1,3 @@
-// TODO: put rickroll in code
-
 #include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
@@ -103,9 +101,13 @@ ssize try_read_ident(Reader *in, Reader *out) {
 }
 
 ssize try_read_ident_str(Reader *in, Reader str) {
+    Reader tmp = *in;
     Reader r = {0};
-    try_read_char_set(in, char_set(ident_set), &r);
-    return are_reader_strs_equal(str, r) ? str.len : 0;
+    try_read_char_set(&tmp, char_set(ident_set), &r);
+    if (are_reader_strs_equal(str, r)) {
+        *in = tmp;
+        return str.len;
+    } else return 0;
 }
 
 ssize try_read_str(Reader *in, Reader str) {
