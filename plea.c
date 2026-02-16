@@ -27,6 +27,10 @@ u64 hash_mem(u8 *buf, ssize len) {
     return h;
 }
 
+bool between(unsigned char l, unsigned char c, unsigned char r) {
+    return l <= c && c <= r;
+}
+
 /* ===== Readers ===== */
 
 #define Reader(lit) (Reader) { .buf = (u8 *) (lit), .len = arrlen(lit) - 1, }
@@ -233,6 +237,20 @@ void *arena_alloc(Arena *a, ssize size, ssize align, ssize count) {
 
 #define new(a, T, c) arena_alloc(a, sizeof(T), _Alignof(T), c)
 
+#define list_push(perm, list) \
+    do { \
+        (list)->len += 1; \
+        if ((list)->len > (list)->cap) { \
+            (list)->cap = (list)->len + 4 + 2 * (list)->cap; \
+            (list)->tmp_buf = new((perm), (list)->tmp_buf, (list)->cap); \
+            for (ssize i = 0; i < (list)->len - 1; i++) { \
+                (list)->tmp_buf[i] = (list)->buf[i]; \
+            } \
+            (list)->buf = (list)->tmp_buf; \
+            (list)->tmp_buf = NULL; \
+        } \
+    } while (0)
+
 /* ===== Main ===== */
 
 #define error(reader, ...) \
@@ -247,7 +265,7 @@ void *arena_alloc(Arena *a, ssize size, ssize align, ssize count) {
 
 typedef struct Type Type;
 struct Type {
-    Reader name, key;
+    Reader name, key; // TODO: clear key
     struct {
         Type **buf, **tmp_buf;
         ssize cap, len;
@@ -297,21 +315,7 @@ void print_type(Type type) {
     if (type.children.len) printf(")");
 }
 
-#define list_push(perm, list) \
-    do { \
-        (list)->len += 1; \
-        if ((list)->len > (list)->cap) { \
-            (list)->cap = (list)->len + 4 + 2 * (list)->cap; \
-            (list)->tmp_buf = new((perm), (list)->tmp_buf, (list)->cap); \
-            for (ssize i = 0; i < (list)->len - 1; i++) { \
-                (list)->tmp_buf[i] = (list)->buf[i]; \
-            } \
-            (list)->buf = (list)->tmp_buf; \
-            (list)->tmp_buf = NULL; \
-        } \
-    } while (0)
-
-ssize try_read_type(Arena *perm, Name **namespace, Reader *in, Type **out, bool uppercase) {
+ssize try_read_type(Arena *perm, Name **namespace, Reader *in, Type **out) {
     Reader old = *in;
 
     bool expect_ident = true;
@@ -342,7 +346,7 @@ ssize try_read_type(Arena *perm, Name **namespace, Reader *in, Type **out, bool 
                     expected(*in, "name for binding");
                 }
 
-                if (!('a' <= key.buf[0] && key.buf[0] <= 'z')) {
+                if (between('a', key.buf[0], 'Z')) {
                     error(*in, "Bindings must begin with a lowercase letter");
                 }
 
@@ -352,16 +356,15 @@ ssize try_read_type(Arena *perm, Name **namespace, Reader *in, Type **out, bool 
                 }
             }
 
-            if (uppercase && !('A' <= ident.buf[0] && ident.buf[0] <= 'Z')) {
-                error(*in, "Types must begin with an uppercase letter here");
-            }
+            Type *t = NULL;
 
-            if (!uppercase && !('a' <= ident.buf[0] && ident.buf[0] <= 'z')) {
-                error(*in, "Types must begin with a lowercase letter here");
+            Name *name = lookup_name(NULL, namespace, ident, false);
+            if (between('a', ident.buf[0], 'z')) {
+                t = name->val;
+            } else {
+                t = new(perm, *t, 1);
+                t->name = ident;
             }
-
-            Type *t = new(perm, *t, 1);
-            t->name = ident;
             t->key = key;
 
             if (try_read_str(in, Reader("("))) {
@@ -372,17 +375,41 @@ ssize try_read_type(Arena *perm, Name **namespace, Reader *in, Type **out, bool 
                 list_push(perm, &(*cur)->children);
                 (*cur)->children.buf[(*cur)->children.len - 1] = t;
                 expect_ident = false;
+                if (key.len) {
+                    if (lookup_name(perm, namespace, key, false)) {
+                        error(*in, "`%.*s` is already bound", (int) key.len, key.buf);
+                    }
+
+                    Name *name = lookup_name(perm, namespace, key, true);
+                    name->val = t;
+                }
             }
         } else if (expect_ident && try_read_str(in, Reader("("))) {
             expected(*in, "type before `(`");
         } else if (try_read_str(in, Reader(")"))) {
             if (stack.len <= 1) error(*in, "Unmatched `)`");
             if (expect_ident) expected(*in, "type");
+
             Type **prev = &stack.buf[stack.len - 2];
+
             list_push(perm, &(*prev)->children);
             (*prev)->children.buf[(*prev)->children.len - 1] = stack.buf[stack.len - 1];
+
+            Reader key = stack.buf[stack.len - 1]->key;
+
+            if (key.len) {
+                if (lookup_name(perm, namespace, key, false)) {
+                    error(*in, "`%.*s` is already bound", (int) key.len, key.buf);
+                }
+
+                Name *name = lookup_name(perm, namespace, key, true);
+                name->val = stack.buf[stack.len - 1];
+            }
+
+
             stack.buf[stack.len - 1] = NULL;
             stack.len -= 1;
+
             expect_ident = false;
         } else if (try_read_str(in, Reader(","))) {
             if (!(*cur)) expected(*in, "type before `,`");
@@ -395,6 +422,19 @@ ssize try_read_type(Arena *perm, Name **namespace, Reader *in, Type **out, bool 
     if (out) *out = stack.buf[0];
 
     return in->i - old.i;
+}
+
+bool do_types_match(Name **namespace, Type a, Type b) {
+    if (a.children.len != b.children.len) return false;
+    if (!are_reader_strs_equal(a.name, b.name)) return false;
+
+    for (ssize i = 0; i < a.children.len; i++) {
+        if (!do_types_match(namespace,
+                            *a.children.buf[i],
+                            *b.children.buf[i])) return false;
+    }
+
+    return true;
 }
 
 int main(int argc, char *argv[]) {
@@ -443,7 +483,7 @@ int main(int argc, char *argv[]) {
             try_read_whitespace(&in);
 
             Type *args = NULL;
-            if (!try_read_type(&arena, &namespace, &in, &args, true)) {
+            if (!try_read_type(&arena, &namespace, &in, &args)) {
                 expected(in, "type");
             }
 
@@ -454,7 +494,7 @@ int main(int argc, char *argv[]) {
             try_read_whitespace(&in);
 
             Type *out = NULL;
-            if (!try_read_type(&arena, &namespace, &in, &out, true)) {
+            if (!try_read_type(&arena, &namespace, &in, &out)) {
                 expected(in, "type");
             }
 
@@ -467,17 +507,22 @@ int main(int argc, char *argv[]) {
                 if (!try_read_ident_str(&in, Reader("proof"))) {
                     expected(in, "proof for theorem");
                 }
+
+                Type *ret = NULL;
+
                 while (in.i < in.len) {
-                    Type *type = NULL;
-                    Reader ident = {0};
-                    Reader tmp = in;
+                    ret = NULL;
                     try_read_whitespace(&in);
                     bool got_ret = try_read_ident_str(&in, Reader("return")) != 0;
                     try_read_whitespace(&in);
-                    if (!try_read_type(&arena, &namespace, &in, &type, false)) {
+                    if (!try_read_type(&arena, &namespace, &in, &ret)) {
                         expected(in, "type");
                     }
                     if (got_ret) break;
+                }
+
+                if (!do_types_match(&namespace, *out, *ret)) {
+                    error(in, "Return types do not match");
                 }
             }
         } else {
