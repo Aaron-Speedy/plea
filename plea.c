@@ -311,7 +311,7 @@ void print_type(Type type) {
         } \
     } while (0)
 
-ssize try_read_type(Arena *perm, Name **namespace, Reader *in, Type **out) {
+ssize try_read_type(Arena *perm, Name **namespace, Reader *in, Type **out, bool uppercase) {
     Reader old = *in;
 
     bool expect_ident = true;
@@ -333,15 +333,31 @@ ssize try_read_type(Arena *perm, Name **namespace, Reader *in, Type **out) {
         if (expect_ident && try_read_ident(in, &ident)) {
             Reader key = {0};
             if (are_reader_strs_equal(ident, Reader("let"))) {
+                if (stack.len > 1) {
+                    error(*in, "Bindings are not allowed inside of parentheses");
+                }
+
                 try_read_whitespace(in);
                 if (!try_read_ident(in, &key)) {
                     expected(*in, "name for binding");
+                }
+
+                if (!('a' <= key.buf[0] && key.buf[0] <= 'z')) {
+                    error(*in, "Bindings must begin with a lowercase letter");
                 }
 
                 try_read_whitespace(in);
                 if (!try_read_ident(in, &ident)) {
                     expected(*in, "type for binding");
                 }
+            }
+
+            if (uppercase && !('A' <= ident.buf[0] && ident.buf[0] <= 'Z')) {
+                error(*in, "Types must begin with an uppercase letter here");
+            }
+
+            if (!uppercase && !('a' <= ident.buf[0] && ident.buf[0] <= 'z')) {
+                error(*in, "Types must begin with a lowercase letter here");
             }
 
             Type *t = new(perm, *t, 1);
@@ -427,7 +443,7 @@ int main(int argc, char *argv[]) {
             try_read_whitespace(&in);
 
             Type *args = NULL;
-            if (!try_read_type(&arena, &namespace, &in, &args)) {
+            if (!try_read_type(&arena, &namespace, &in, &args, true)) {
                 expected(in, "type");
             }
 
@@ -438,7 +454,7 @@ int main(int argc, char *argv[]) {
             try_read_whitespace(&in);
 
             Type *out = NULL;
-            if (!try_read_type(&arena, &namespace, &in, &out)) {
+            if (!try_read_type(&arena, &namespace, &in, &out, true)) {
                 expected(in, "type");
             }
 
@@ -448,13 +464,20 @@ int main(int argc, char *argv[]) {
             printf("\n");
 
             if (!is_axiom) {
-                if (!try_read_ident_str(&in, Reader("proof"))) expected(in, "proof for theorem");
+                if (!try_read_ident_str(&in, Reader("proof"))) {
+                    expected(in, "proof for theorem");
+                }
                 while (in.i < in.len) {
                     Type *type = NULL;
                     Reader ident = {0};
                     Reader tmp = in;
+                    try_read_whitespace(&in);
                     bool got_ret = try_read_ident_str(&in, Reader("return")) != 0;
-                    if (!try_read_type(&arena, &namespace, &in, &type)) error(in, "type"); 
+                    try_read_whitespace(&in);
+                    if (!try_read_type(&arena, &namespace, &in, &type, false)) {
+                        expected(in, "type");
+                    }
+                    if (got_ret) break;
                 }
             }
         } else {
